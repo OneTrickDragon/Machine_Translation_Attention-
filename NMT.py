@@ -107,12 +107,12 @@ class NMTVectorizer(object):
 
     def _get_source_indices(self, text):
         indices = [self.source_vocab.sos_index]
-        indices.extend(self.source_vocab.add_many(word) for word in text.split(" "))
+        indices.extend(self.source_vocab.lookup_token(word) for word in text.split(" "))
         indices.append(self.source_vocab.eos_index)
         return indices
     
     def _get_target_indices(self, text):
-        indices = [self.source_vocab.add_many(word) for word in text.split(" ")]
+        indices = [self.source_vocab.lookup_token(word) for word in text.split(" ")]
         x_indices = [self.source_vocab.sos_token] + indices
         y_indices = indices + [self.source_vocab.eos_token]
         return x_indices, y_indices
