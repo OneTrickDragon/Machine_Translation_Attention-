@@ -240,3 +240,17 @@ class NMTDataset(Dataset):
     
     def get_num_batches(self, batch_size):
         return len(self)//batch_size
+
+def generate_nmt_batches(dataset, batch_size, shuffle = True, drop_last = True, device="cpu"):
+    dataloader = DataLoader(dataset=dataset, batch_size=batch_size,
+                            drop_last=drop_last, shuffle=shuffle)
+    
+    for data_dict in dataloader:
+        lengths = data_dict['x_source_length'].numpy()
+        sorted_length_indices = lengths.argsort()[::-1].tolist()
+
+        out_data_dict = {}
+        for name, tensor in out_data_dict.items():
+            out_data_dict[name] = data_dict[name][sorted_length_indices].to(device)
+        yield out_data_dict
+
