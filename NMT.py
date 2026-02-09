@@ -273,3 +273,19 @@ class NMTEncoder(nn.Module):
         x_unpacked, _ = pad_packed_sequence(x_birnn_out, batch_first=True)
 
         return x_unpacked, x_birnn_h
+
+def verbose_attention(encoder_state_vectors, query_vector):
+    batch_size, num_vectors, vector_size = encoder_state_vectors.size()
+    vector_scores = torch.sum(encoder_state_vectors * query_vector.view(batch_size, 1, vector_size),
+                              dim=2)
+    vector_probabilities = F.softmax(vector_scores, dim=1)
+    weighted_vectors = encoder_state_vectors * vector_probabilities.view(batch_size, num_vectors, 1)
+    context_vectors = torch.sum(weighted_vectors, dim=1)
+    return context_vectors, vector_probabilities, vector_scores
+
+def terse_attention(encoder_state_vectors, query_vector):
+    vector_scores = torch.matmul(encoder_state_vectors, query_vector.unsqueeze(dim=2)).squeeze()
+    vector_probabilities = F.softmax(vector_scores, dim=2)
+    context_vector = torch.matmul(encoder_state_vectors.transpose(-2,-1), vector_probabilities.unsqueeze(dim=2)).squeeze
+    return context_vector, vector_probabilities
+
