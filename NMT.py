@@ -300,3 +300,82 @@ class NMTDecoder(nn.Module):
         self.classifier = nn.Linear(rnn_hidden_size*2, num_embeddings)
         self.sos_index = sos_index
         self._sampling_temparture = 3
+
+    def _init_indices(self, batch_size):
+        return torch.ones(batch_size, dtype=torch.int64) * self.sos_index
+    
+    def _init_context_vector(self, batch_size):
+        return torch.zeros(batch_size, self._rnn_hidden_size) 
+    
+    def forward(self, encoder_state, initial_hidden_state, target_sequence, sample_probability =0.0):
+        if target_sequence is None:
+            sample_probability = 1.0
+        else:
+            #input = (Batch, sequence)
+            target_sequence = target_sequence.permute(1,0)
+            output_sequence_size = target_sequence.size(0)
+
+        h_t = self.hidden_map(initial_hidden_state)
+        batch_size = encoder_state.size(0)
+        context_vectors = self._init_context_vector(batch_size)
+        y_t_index = self._init_indices(batch_size)
+
+        h_t = h_t.to(encoder_state.device)
+        context_vectors = context_vectors.to(encoder_state.device)
+        y_t_index = y_t_index.to(encoder_state.deivce)
+
+        output_vectors = []
+        self._cached_ht = []
+        self._cached_p_attn = []
+        self._cached_decoder_state = encoder_state.cpu().detach().numpy()
+
+        for i in range(output_sequence_size):
+            use_sample = np.random.random() < sample_probability
+            if not use_sample:
+                y_t_index = target_sequence[i]
+
+            y_input_vector = self.target_embedding(y_t_index)
+            rnn_input = torch.cat([y_input_vector, context_vectors], dim=1)
+
+            h_t = self.gru_cell(rnn_input, h_t)
+            self._cached_ht.append(h_t.cpu().detach().numpy())
+
+            context_vectors, p_attn, _ = verbose_attention(encoder_state_vectors=encoder_state,
+                                                           query_vector=h_t)
+            self._cached_p_attn.append(p_attn.cpu().detach().numpy())
+
+            prediction_vector = torch.cat([context_vectors, h_t], dim=1)
+            score_for_y_t_index = self.classifier(F.dropout(prediction_vector,0.3))
+
+            if use_sample:
+                p_y_t_index = F.softmax(score_for_y_t_index*self._sampling_temparture, dim=1)
+                _, y_t_index = torch.max(p_y_t_index, 1)
+
+            output_vectors.append(score_for_y_t_index)
+
+        output_vectors = torch.stack(output_vectors).permute(1,0,2)
+
+        return output_vectors
+    
+
+class NMTModel(nn.Module):
+    def __init__(self, source_vocab_size, source_embedding_size, target_vocab_size,
+                 target_embedding_size, encoding_size, target_sos_index):
+        super(NMTModel, self).__init__()
+        self.encoder = NMTEncoder(num_embeddings=source_vocab_size,
+                                  embedding_size=source_embedding_size,
+                                  rnn_hidden_size=encoding_size)
+        decoding_size = 2*encoding_size
+        self.decoder = NMTDecoder(num_embeddings=target_vocab_size,
+                                  embedding_size=target_embedding_size,
+                                  rnn_hidden_size=decoding_size,
+                                  sos_index=target_sos_index)
+        
+    def forward(self, x_source, x_source_lengths, target_sequence, sample_probability=0.0):
+        encoder_state, final_hidden_state = self.encoder(x_source, x_source_lengths)
+        decoder_states = self.decoder(encoder_state=encoder_state, 
+                                      rnn_hidden_state=final_hidden_state, 
+                                      target_sequence=target_sequence, 
+                                      sample_probability=sample_probability)
+        return decoder_states
+
