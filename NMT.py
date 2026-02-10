@@ -289,3 +289,14 @@ def terse_attention(encoder_state_vectors, query_vector):
     context_vector = torch.matmul(encoder_state_vectors.transpose(-2,-1), vector_probabilities.unsqueeze(dim=2)).squeeze
     return context_vector, vector_probabilities
 
+class NMTDecoder(nn.Module):
+    def __init__(self, num_embeddings, embedding_size, rnn_hidden_size, sos_index):
+        super(NMTDecoder, self).__init__
+        self._rnn_hidden_size = rnn_hidden_size
+        self.target_embedding = nn.Embedding(num_embeddings, embedding_size, padding_idx=0)
+        self.gru_cell = nn.GRUCell(embedding_size + rnn_hidden_size,
+                                rnn_hidden_size)
+        self.hidden_map = nn.Linear(rnn_hidden_size, rnn_hidden_size)
+        self.classifier = nn.Linear(rnn_hidden_size*2, num_embeddings)
+        self.sos_index = sos_index
+        self._sampling_temparture = 3
