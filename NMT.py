@@ -379,3 +379,47 @@ class NMTModel(nn.Module):
                                       sample_probability=sample_probability)
         return decoder_states
 
+def set_seed_everywhere(seed, cuda):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if cuda:
+        torch.cuda.manual_seed_all(seed)
+
+def handle_dirs(dirpath):
+    if not os.path.exists(dirpath):
+        os.makedirs(dirpath)
+
+def make_train_state(args):
+    return {'stop_early': False,
+            'early_stopping_step': 0,
+            'early_stopping_best_val': 1e8,
+            'learning_rate': args.learning_rate,
+            'epoch_index': 0,
+            'train_loss': [],
+            'train_acc': [],
+            'val_loss': [],
+            'val_acc': [],
+            'test_loss': -1,
+            'test_acc': -1,
+            'model_filename': args.model_state_file}
+
+def update_train_state(args, model, train_state):
+    if train_state['epoch_index'] == 0:
+        torch.save(model.state_dict(), train_state['model_filename'])
+        train_state['stop_early'] = False
+
+    elif train_state['epoch_index'] > 0:
+        loss_tm1, loss_t = train_state['val_loss'][-2:]
+        if loss_t >= loss_tm1:
+            train_state['early_stopping'] += 1
+        else:
+            if loss_t < train_state['early_stopping_best_val']:
+                torch.save(model.state_dict(), train_state['model_filename'])
+                train_state['early_stopping_best_val'] = loss_t
+
+            train_state['early_stopping_step'] = 0
+        
+            train_state['stop_early'] = \
+            train_state['early_stopping_step'] >= args.early_stopping_criteria
+
+    return train_state
