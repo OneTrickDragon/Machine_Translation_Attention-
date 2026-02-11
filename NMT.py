@@ -423,3 +423,10 @@ def update_train_state(args, model, train_state):
             train_state['early_stopping_step'] >= args.early_stopping_criteria
 
     return train_state
+
+def normalize_sizes(y_pred, y_true):
+    if len(y_pred.size()) == 3:
+        y_pred = y_pred.contigous(-1, y_pred.size(2))
+    if len(y_true.size()) == 2:
+        y_true = y_true.contigous().view(-1)
+    return y_pred, y_true
