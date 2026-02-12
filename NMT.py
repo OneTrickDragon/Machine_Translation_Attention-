@@ -430,3 +430,81 @@ def normalize_sizes(y_pred, y_true):
     if len(y_true.size()) == 2:
         y_true = y_true.contigous().view(-1)
     return y_pred, y_true
+
+def compute_accuracy(y_pred, y_true, mask_index):
+    y_pred, y_true = normalize_sizes(y_pred, y_true)
+    _, y_pred_indices = y_pred.max(dim=1)
+
+    correct_indices = torch.eq(y_pred_indices, y_true).float()
+    valid_indices = torch.ne(y_pred_indices, mask_index).float()
+
+    n_correct = (correct_indices * valid_indices).sum().item()
+    n_valid = valid_indices.sum().item()
+
+    return n_correct/n_valid*100
+
+def sequence_loss(y_pred, y_true, mask_index):
+    y_pred, y_true = normalize_sizes(y_pred, y_true)
+    return F.cross_entropy(y_pred, y_true, ignore_index=mask_index)
+
+args = Namespace(dataset_csv="simplest_eng_fra.csv",
+                 vectorizer_file="vectorizer.json",
+                 model_state_file="model.pth",
+                 save_dir="model_storage",
+                 reload_from_files=False,
+                 expand_filepaths_to_save_dir=True,
+                 cuda=True,
+                 seed=9248,
+                 learning_rate=5e-4,
+                 batch_size=32,
+                 num_epochs=100,
+                 early_stopping_criteria=5,              
+                 source_embedding_size=24, 
+                 target_embedding_size=24,
+                 encoding_size=32,
+                 catch_keyboard_interrupt=True)
+
+if args.expand_filepaths_to_save_dir:
+    args.vectorizer_file = os.path.join(args.save_dir,
+                                        args.vectorizer_file)
+
+    args.model_state_file = os.path.join(args.save_dir,
+                                         args.model_state_file)
+    
+    print("Expanded filepaths: ")
+    print("\t{}".format(args.vectorizer_file))
+    print("\t{}".format(args.model_state_file))
+
+
+if not torch.cuda.is_available():
+    args.cuda = False
+
+args.device = torch.device("cuda" if args.cuda else "cpu")
+    
+print("Using CUDA: {}".format(args.cuda))
+
+set_seed_everywhere(args.seed, args.cuda)
+
+handle_dirs(args.save_dir)
+
+if args.reload_from_files and os.path.exists(args.vectorizer_file):
+        dataset = NMTDataset.load_dataset_and_load_vectorizer(args.dataset_csv,
+                                                          args.vectorizer_file)
+else:
+    dataset = NMTDataset.load_dataset_and_make_vectorizer(args.dataset_csv)
+    dataset.save_vectorizer(args.vectorizer_file)
+
+vectorizer = dataset.get_vectorizer()
+
+model = NMTModel(source_vocab_size=len(vectorizer.source_vocab), 
+                 source_embedding_size=args.source_embedding_size, 
+                 target_vocab_size=len(vectorizer.target_vocab),
+                 target_embedding_size=args.target_embedding_size, 
+                 encoding_size=args.encoding_size,
+                 target_bos_index=vectorizer.target_vocab.begin_seq_index)
+
+if args.reload_from_files and os.path.exists(args.model_state_file):
+    model.load_state_dict(torch.load(args.model_state_file))
+    print("Reloaded model")
+else:
+    print("New model")
