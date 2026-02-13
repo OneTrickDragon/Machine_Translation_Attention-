@@ -508,3 +508,116 @@ if args.reload_from_files and os.path.exists(args.model_state_file):
     print("Reloaded model")
 else:
     print("New model")
+
+
+model = model.to(args.device)
+optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer,
+                                           mode='min', factor=0.5,
+                                           patience=1)
+
+mask_index = vectorizer.target_vocab.mask_index
+train_state = make_train_state(args)
+
+epoch_bar = tqdm_notebook(desc='training routine', 
+                          total=args.num_epochs,
+                          position=0)
+
+dataset.set_split('train')
+train_bar = tqdm_notebook(desc='split=train',
+                          total=dataset.get_num_batches(args.batch_size), 
+                          position=1, 
+                          leave=True)
+dataset.set_split('val')
+val_bar = tqdm_notebook(desc='split=val',
+                        total=dataset.get_num_batches(args.batch_size), 
+                        position=1, 
+                        leave=True)
+
+try:
+    for epoch_index in range(args.num_epochs):
+        sample_probability = (20 + epoch_index) / args.num_epochs
+        
+        train_state['epoch_index'] = epoch_index
+
+        # Iterate over training dataset
+
+        # setup: batch generator, set loss and acc to 0, set train mode on
+        dataset.set_split('train')
+        batch_generator = generate_nmt_batches(dataset, 
+                                               batch_size=args.batch_size, 
+                                               device=args.device)
+        running_loss = 0.0
+        running_acc = 0.0
+        model.train()
+        
+        for batch_index, batch_dict in enumerate(batch_generator):
+            optimizer.zero_grad()
+
+            y_pred = model(batch_dict['x_source'], 
+                           batch_dict['x_source_length'], 
+                           batch_dict['x_target'],
+                           sample_probability=sample_probability)
+
+            loss = sequence_loss(y_pred, batch_dict['y_target'], mask_index)
+
+            loss.backward()
+
+
+            optimizer.step()
+
+            running_loss += (loss.item() - running_loss) / (batch_index + 1)
+
+            acc_t = compute_accuracy(y_pred, batch_dict['y_target'], mask_index)
+            running_acc += (acc_t - running_acc) / (batch_index + 1)
+
+            train_bar.set_postfix(loss=running_loss, acc=running_acc, 
+                                  epoch=epoch_index)
+            train_bar.update()
+
+        train_state['train_loss'].append(running_loss)
+        train_state['train_acc'].append(running_acc)
+
+        dataset.set_split('val')
+        batch_generator = generate_nmt_batches(dataset, 
+                                               batch_size=args.batch_size, 
+                                               device=args.device)
+        running_loss = 0.
+        running_acc = 0.
+        model.eval()
+
+        for batch_index, batch_dict in enumerate(batch_generator):
+            y_pred = model(batch_dict['x_source'], 
+                           batch_dict['x_source_length'], 
+                           batch_dict['x_target'],
+                           sample_probability=sample_probability)
+
+            loss = sequence_loss(y_pred, batch_dict['y_target'], mask_index)
+
+            running_loss += (loss.item() - running_loss) / (batch_index + 1)
+            
+            acc_t = compute_accuracy(y_pred, batch_dict['y_target'], mask_index)
+            running_acc += (acc_t - running_acc) / (batch_index + 1)
+
+            val_bar.set_postfix(loss=running_loss, acc=running_acc, 
+                            epoch=epoch_index)
+            val_bar.update()
+
+        train_state['val_loss'].append(running_loss)
+        train_state['val_acc'].append(running_acc)
+
+        train_state = update_train_state(args=args, model=model, 
+                                         train_state=train_state)
+
+        scheduler.step(train_state['val_loss'][-1])
+
+        if train_state['stop_early']:
+            break
+        
+        train_bar.n = 0
+        val_bar.n = 0
+        epoch_bar.set_postfix(best_val=train_state['early_stopping_best_val'])
+        epoch_bar.update()
+        
+except KeyboardInterrupt:
+    print("Exiting loop")
