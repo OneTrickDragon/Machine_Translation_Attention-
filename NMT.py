@@ -13,12 +13,12 @@ from torch.nn import functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
-from tqdm import tqdm_notebook
+from tqdm import tqdm as notebook
 
 class Vocabulary(object):
     def __init__(self, token_to_idx = None):
         if token_to_idx is None:
-            self._token_to_idx = {}
+            token_to_idx = {}
 
         self._token_to_idx = token_to_idx
         self._idx_to_token = {idx :token
@@ -61,7 +61,7 @@ class Vocabulary(object):
 class SequenceVocabulary(Vocabulary):
     def __init__(self, token_to_idx=None, unk_token = "<UNK>", sos_token = "<SOS>",
                          eos_token = "<EOS>", mask_token = "<MASK>"):
-        super(SequenceVocabulary, self).__ini__(token_to_idx)
+        super(SequenceVocabulary, self).__init__(token_to_idx)
 
         self._mask_token = mask_token
         self._unk_token = unk_token
@@ -82,7 +82,7 @@ class SequenceVocabulary(Vocabulary):
         return contents
     
     def lookup_token(self, token):
-        if self._unk_index >= 0:
+        if self.unk_index >= 0:
             return self._token_to_idx.get(token, self.unk_index)
         else:
             return self._token_to_idx[token]
@@ -107,35 +107,38 @@ class NMTVectorizer(object):
 
     def _get_source_indices(self, text):
         indices = [self.source_vocab.sos_index]
-        indices.extend(self.source_vocab.lookup_token(word) for word in text.split(" "))
+        indices.extend(self.source_vocab.lookup_token(word) for word in text.split())
         indices.append(self.source_vocab.eos_index)
         return indices
     
     def _get_target_indices(self, text):
-        indices = [self.source_vocab.lookup_token(word) for word in text.split(" ")]
-        x_indices = [self.source_vocab.sos_token] + indices
-        y_indices = indices + [self.source_vocab.eos_token]
+        indices = [self.target_vocab.lookup_token(word) for word in text.split()]
+        x_indices = [self.target_vocab.sos_index] + indices
+        y_indices = indices + [self.target_vocab.eos_index]
         return x_indices, y_indices
     
     def vectorize(self, source_text, target_text, use_max_data_lengths = True):
         source_length = -1
         target_length = -1
 
-        if use_max_data_lengths:
-            source_length = len(source_text) + 2
-            target_length = len(target_text) + 1
-
         source_indices = self._get_source_indices(source_text)
-        source_vector = self._vectorize(source_indices, source_length, self.source_vocab.mask_index)
-
         x_target, y_target = self._get_target_indices(target_text)
+
+        if use_max_data_lengths:
+            source_length = self.max_source_length + 2
+            target_length = self.max_target_length + 1
+        else:
+            source_length = len(source_indices)
+            target_length = max(len(x_target), len(y_target))
+
+        source_vector = self._vectorize(source_indices, source_length, self.source_vocab.mask_index)
         target_x_vector = self._vectorize(x_target, target_length, self.target_vocab.mask_index)
         target_y_vector = self._vectorize(y_target, target_length, self.target_vocab.mask_index)
 
-        return {"source vector": source_vector,
+        return {"source_vector": source_vector,
                 "target_x_vector": target_x_vector,
                 "target_y_vector": target_y_vector,
-                "source length": source_length}
+                "source_length": len(source_indices)}
     
     @classmethod
     def from_dataframe(cls, bitext_df):
@@ -146,13 +149,13 @@ class NMTVectorizer(object):
         max_target_length = 0
 
         for _, row in bitext_df.iterrows():
-            source_tokens = row["source_language"].split(" ")
+            source_tokens = row["source_language"].split()
             if len(source_tokens) > max_source_length:
                 max_source_length = len(source_tokens)
             for token in source_tokens:
                 source_vocab.add_token(token)
 
-            target_tokens = row["target_language"].split(" ")
+            target_tokens = row["target_language"].split()
             if len(target_tokens) > max_target_length:
                 max_target_length = len(target_tokens)
             for token in target_tokens:
@@ -168,11 +171,11 @@ class NMTVectorizer(object):
         return cls(source_vocab = source_vocab,
                    target_vocab = target_vocab,
                    max_source_length = contents["max_source_length"],
-                   max_target_length = contents["max]_target_length"])
+                   max_target_length = contents["max_target_length"])
     
     def to_serializable(self):
-        return{"source vocab": self.source_vocab.to_serializable(),
-               "target vocab": self.target_vocab.to_serializable(),
+        return{"source_vocab": self.source_vocab.to_serializable(),
+               "target_vocab": self.target_vocab.to_serializable(),
                "max_source_length": self.max_source_length,
                "max_target_length": self.max_target_length}
 
@@ -232,10 +235,17 @@ class NMTDataset(Dataset):
         row = self._target_df.iloc[index]
 
         vector_dict = self._vectorizer.vectorize(row.source_language, row.target_language) 
+        sv = vector_dict['source_vector']
+        tx = vector_dict['target_x_vector']
+        ty = vector_dict['target_y_vector']
 
-        return {'x_source': vector_dict['source_vector'],
-                'x_target': vector_dict['target_x_vector'],
-                'y_target': vector_dict['target_y_vector'],
+        assert len(sv) == self._vectorizer.max_source_length + 2, (len(sv), self._vectorizer.max_source_length + 2)
+        assert len(tx) == self._vectorizer.max_target_length + 1, (len(tx), self._vectorizer.max_target_length + 1)
+        assert len(ty) == self._vectorizer.max_target_length + 1, (len(ty), self._vectorizer.max_target_length + 1)
+        
+        return {'x_source': sv,
+                'x_target': tx,
+                'y_target': ty,
                 'x_source_length': vector_dict['source_length']}
     
     def get_num_batches(self, batch_size):
@@ -250,7 +260,7 @@ def generate_nmt_batches(dataset, batch_size, shuffle = True, drop_last = True, 
         sorted_length_indices = lengths.argsort()[::-1].tolist()
 
         out_data_dict = {}
-        for name, tensor in out_data_dict.items():
+        for name, tensor in data_dict.items():
             out_data_dict[name] = data_dict[name][sorted_length_indices].to(device)
         yield out_data_dict
 
@@ -264,7 +274,7 @@ class NMTEncoder(nn.Module):
     def forward(self, x_source, x_lengths):
         x_embedded = self.source_embedding(x_source)
 
-        x_packed = pack_padded_sequence(x_embedded, x_lengths.detach().cpu().numpy(), batch_first=True)
+        x_packed = pack_padded_sequence(x_embedded, x_lengths.detach().cpu(), batch_first=True, enforce_sorted=False)
 
         x_birnn_out, x_birnn_h = self.birnn(x_packed)
         x_birnn_h = x_birnn_h.permute(1, 0, 2)
@@ -291,7 +301,7 @@ def terse_attention(encoder_state_vectors, query_vector):
 
 class NMTDecoder(nn.Module):
     def __init__(self, num_embeddings, embedding_size, rnn_hidden_size, sos_index):
-        super(NMTDecoder, self).__init__
+        super(NMTDecoder, self).__init__()
         self._rnn_hidden_size = rnn_hidden_size
         self.target_embedding = nn.Embedding(num_embeddings, embedding_size, padding_idx=0)
         self.gru_cell = nn.GRUCell(embedding_size + rnn_hidden_size,
@@ -310,6 +320,7 @@ class NMTDecoder(nn.Module):
     def forward(self, encoder_state, initial_hidden_state, target_sequence, sample_probability =0.0):
         if target_sequence is None:
             sample_probability = 1.0
+            output_sequence_size = encoder_state.size(1)
         else:
             #input = (Batch, sequence)
             target_sequence = target_sequence.permute(1,0)
@@ -322,7 +333,7 @@ class NMTDecoder(nn.Module):
 
         h_t = h_t.to(encoder_state.device)
         context_vectors = context_vectors.to(encoder_state.device)
-        y_t_index = y_t_index.to(encoder_state.deivce)
+        y_t_index = y_t_index.to(encoder_state.device)
 
         output_vectors = []
         self._cached_ht = []
@@ -374,7 +385,7 @@ class NMTModel(nn.Module):
     def forward(self, x_source, x_source_lengths, target_sequence, sample_probability=0.0):
         encoder_state, final_hidden_state = self.encoder(x_source, x_source_lengths)
         decoder_states = self.decoder(encoder_state=encoder_state, 
-                                      rnn_hidden_state=final_hidden_state, 
+                                      initial_hidden_state=final_hidden_state, 
                                       target_sequence=target_sequence, 
                                       sample_probability=sample_probability)
         return decoder_states
@@ -411,7 +422,7 @@ def update_train_state(args, model, train_state):
     elif train_state['epoch_index'] > 0:
         loss_tm1, loss_t = train_state['val_loss'][-2:]
         if loss_t >= loss_tm1:
-            train_state['early_stopping'] += 1
+            train_state['early_stopping_step'] += 1
         else:
             if loss_t < train_state['early_stopping_best_val']:
                 torch.save(model.state_dict(), train_state['model_filename'])
@@ -426,9 +437,9 @@ def update_train_state(args, model, train_state):
 
 def normalize_sizes(y_pred, y_true):
     if len(y_pred.size()) == 3:
-        y_pred = y_pred.contigous(-1, y_pred.size(2))
+        y_pred = y_pred.contiguous().view(-1, y_pred.size(2))
     if len(y_true.size()) == 2:
-        y_true = y_true.contigous().view(-1)
+        y_true = y_true.contiguous().view(-1)
     return y_pred, y_true
 
 def compute_accuracy(y_pred, y_true, mask_index):
@@ -501,7 +512,7 @@ model = NMTModel(source_vocab_size=len(vectorizer.source_vocab),
                  target_vocab_size=len(vectorizer.target_vocab),
                  target_embedding_size=args.target_embedding_size, 
                  encoding_size=args.encoding_size,
-                 target_bos_index=vectorizer.target_vocab.begin_seq_index)
+                 target_sos_index=vectorizer.target_vocab.sos_index)
 
 if args.reload_from_files and os.path.exists(args.model_state_file):
     model.load_state_dict(torch.load(args.model_state_file))
@@ -519,17 +530,17 @@ scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer,
 mask_index = vectorizer.target_vocab.mask_index
 train_state = make_train_state(args)
 
-epoch_bar = tqdm_notebook(desc='training routine', 
+epoch_bar = notebook.tqdm(desc='training routine', 
                           total=args.num_epochs,
                           position=0)
 
 dataset.set_split('train')
-train_bar = tqdm_notebook(desc='split=train',
+train_bar = notebook.tqdm(desc='split=train',
                           total=dataset.get_num_batches(args.batch_size), 
                           position=1, 
                           leave=True)
 dataset.set_split('val')
-val_bar = tqdm_notebook(desc='split=val',
+val_bar = notebook.tqdm(desc='split=val',
                         total=dataset.get_num_batches(args.batch_size), 
                         position=1, 
                         leave=True)
@@ -539,10 +550,6 @@ try:
         sample_probability = (20 + epoch_index) / args.num_epochs
         
         train_state['epoch_index'] = epoch_index
-
-        # Iterate over training dataset
-
-        # setup: batch generator, set loss and acc to 0, set train mode on
         dataset.set_split('train')
         batch_generator = generate_nmt_batches(dataset, 
                                                batch_size=args.batch_size, 
